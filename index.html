@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>טיימרים קוליים – PWA</title>
+
+<!-- PWA -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0ea5e9">
+
+<!-- iOS (אייקון + מסך מלא) -->
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+<style>
+  :root{ --brand:#0ea5e9; --muted:#666; }
+  body{font-family:system-ui,Arial,sans-serif;margin:20px}
+  h1{margin-bottom:8px}
+  button{padding:10px 14px;border-radius:10px;border:1px solid #ddd;margin:4px;cursor:pointer}
+  table{width:100%;border-collapse:collapse;margin-top:12px}
+  th,td{padding:10px;border-bottom:1px solid #eee;text-align:right;vertical-align:middle}
+  .name{font-weight:600}
+  .progress{height:10px;background:#eee;border-radius:999px;overflow:hidden}
+  .bar{height:100%;width:0%}
+  .controls{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .muted{color:var(--muted)}
+  .pill{display:inline-block;padding:4px 10px;border-radius:999px;background:#f4f4f4}
+  dialog{border:none;border-radius:12px;max-width:960px;width:90%}
+  dialog::backdrop{background:#0007}
+  .toggle{display:inline-flex;gap:8px;align-items:center;border:1px solid #ddd;border-radius:999px;padding:6px 10px}
+</style>
+</head>
+<body>
+  <h1>⏱️ טיימרים קוליים (מרובים)</h1>
+
+  <div class="controls">
+    <button id="btnListen">🎤 התחל האזנה</button>
+    <button id="btnStop">⛔ עצור האזנה</button>
+    <button id="btnCancelAll">🗑️ בטל את כל הטיימרים</button>
+    <button id="btnHelp">❓ עזרה</button>
+    <span id="status" class="muted">מצב: מוכן</span>
+    <span class="toggle">🔔 פעמון: <button id="btnBell">מופעל</button></span>
+    <span class="toggle">🔔 התראות: <button id="btnNotif">הפעל</button></span>
+  </div>
+
+  <p class="muted">
+    דוגמאות:
+    <span class="pill">הפעל טיימר 20 דקות עוגה</span>
+    <span class="pill">השהה טיימר פסטה</span>
+    <span class="pill">המשך טיימר פסטה</span>
+    <span class="pill">הוסף 5 דקות טיימר פשטידה</span>
+    <span class="pill">בטל טיימר עוגה</span>
+    <span class="pill">כמה זמן נשאר לעוגה?</span>
+    <span class="pill">כמה זמן נשאר?</span>
+  </p>
+
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th>שם</th>
+        <th>זמן שנותר</th>
+        <th>משך</th>
+        <th>מצב</th>
+        <th>התקדמות</th>
+        <th>פעולות</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+
+  <!-- עזרה -->
+  <dialog id="helpDialog">
+    <div class="help">
+      <h2>עזרה – פקודות קוליות</h2>
+      <p>הטיימרים עובדים על <b>דקות שלמות</b> בלבד.</p>
+      <h3>הפעלה</h3>
+      <ul>
+        <li>הפעל טיימר 10 דקות</li>
+        <li>הפעל טיימר 20 דקות עוגה</li>
+      </ul>
+      <h3>ביטול</h3>
+      <ul>
+        <li>בטל טיימר עוגה</li>
+        <li>בטל טיימר (מבטל את כולם)</li>
+      </ul>
+      <h3>השהייה/המשך</h3>
+      <ul>
+        <li>השהה טיימר פסטה</li>
+        <li>המשך טיימר פסטה</li>
+      </ul>
+      <h3>הארכה</h3>
+      <ul>
+        <li>הוסף 5 דקות טיימר פשטידה</li>
+      </ul>
+      <h3>שאילת זמן שנותר</h3>
+      <ul>
+        <li>כמה זמן נשאר לעוגה?</li>
+        <li>כמה זמן נשאר? (כאשר יש רק טיימר אחד פעיל)</li>
+      </ul>
+      <div style="text-align:end"><button id="btnCloseHelp">סגור</button></div>
+    </div>
+  </dialog>
+
+<script>
+/* ===== זיהוי דיבור ===== */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, listening = false;
+
+/* ===== נתונים =====
+   Map<name, { name, start, end, totalMs, paused, remainingAtPause }>
+*/
+const timers = new Map();
+let soundEnabled = true;
+let notificationsEnabled = false;
+
+/* ===== LocalStorage ===== */
+const LS_KEY_TIMERS = 'voice_timers_v1';
+const LS_KEY_SOUND  = 'voice_timers_sound';
+const LS_KEY_NOTIF  = 'voice_timers_notif';
+
+function persist(){
+  const arr = [...timers.values()].map(t => ({
+    name: t.name,
+    start: t.start,
+    end: t.end,
+    totalMs: t.totalMs,
+    paused: t.paused,
+    remainingAtPause: t.remainingAtPause
+  }));
+  try{
+    localStorage.setItem(LS_KEY_TIMERS, JSON.stringify(arr));
+    localStorage.setItem(LS_KEY_SOUND,  soundEnabled ? '1':'0');
+    localStorage.setItem(LS_KEY_NOTIF,  notificationsEnabled ? '1':'0');
+  }catch{}
+}
+function restore(){
+  try{
+    soundEnabled = localStorage.getItem(LS_KEY_SOUND) !== '0';
+    notificationsEnabled = localStorage.getItem(LS_KEY_NOTIF) === '1';
+    updateTogglesUI();
+
+    const raw = localStorage.getItem(LS_KEY_TIMERS);
+    if(!raw) return;
+    const arr = JSON.parse(raw);
+    for(const t of arr){ timers.set(t.name, {...t}); }
+  }catch{}
+}
+
+/* ===== דיבור חזרה ===== */
+function say(text){
+  if(!('speechSynthesis' in window)) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'he-IL';
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(u);
+}
+
+/* ===== פעמון ===== */
+document.getElementById('btnBell').onclick = () => {
+  soundEnabled = !soundEnabled;
+  updateTogglesUI();
+  persist();
+};
+async function playChime(){
+  if(!soundEnabled) return;
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  if(!AudioCtx) return;
+  const ctx = new AudioCtx();
+  const now = ctx.currentTime;
+  function tone(freq, t0, dur, gain=0.08){
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'sine'; osc.frequency.value = freq;
+    g.gain.value = 0;
+    osc.connect(g).connect(ctx.destination);
+    osc.start(now + t0);
+    g.gain.setTargetAtTime(gain, now + t0, 0.01);
+    g.gain.setTargetAtTime(0.0001, now + t0 + dur - 0.05, 0.02);
+    osc.stop(now + t0 + dur + 0.02);
+  }
+  tone(523.25, 0.00, 0.22);
+  tone(659.25, 0.08, 0.22);
+  tone(783.99, 0.16, 0.30);
+  tone(1046.5, 0.36, 0.25, 0.06);
+  setTimeout(()=>ctx.close(), 1200);
+}
+
+/* ===== התראות ===== */
+document.getElementById('btnNotif').onclick = async ()=>{
+  try{
+    if(!('Notification' in window)){ alert('הדפדפן לא תומך בהתראות'); return; }
+    if(Notification.permission === 'granted'){
+      notificationsEnabled = !notificationsEnabled;
+      updateTogglesUI(); persist();
+      return;
+    }
+    const perm = await Notification.requestPermission();
+    notificationsEnabled = (perm === 'granted');
+    updateTogglesUI(); persist();
+  }catch{}
+};
+function notifyDone(name){
+  if(!notificationsEnabled || !('Notification' in window)) return;
+  try{ new Notification('הטיימר נגמר', { body: name ? `– ${name}` : '' }); }catch{}
+}
+
+function updateTogglesUI(){
+  document.getElementById('btnBell').textContent  = soundEnabled ? 'מופעל' : 'מושתק';
+  document.getElementById('btnNotif').textContent = notificationsEnabled ? 'מופעל' : 'הפעל';
+}
+
+/* ===== עזרי זמן ===== */
+function clamp(v,min,max){ return Math.min(max, Math.max(min, v)); }
+function mmss(ms){
+  ms = Math.max(0, ms|0);
+  const s = Math.floor(ms/1000);
+  const m = Math.floor(s/60);
+  return String(m).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+}
+const statusEl = document.getElementById('status');
+function setStatus(t){ statusEl.textContent = 'מצב: ' + t; }
+
+/* ===== פעולות ליבה ===== */
+function normalizeName(s){
+  if(!s) return '';
+  return s
+    .replace(/^\s*טיימר\s*/,'')
+    .replace(/^\s*דקות?\s*/,'')
+    .replace(/^\s*דקה\s*/,'')
+    .replace(/^\s*ל/,'')   // "לעוגה" -> "עוגה"
+    .replace(/^[-–—\s"']+/, '')
+    .trim();
+}
+
+function startTimer(minutes, rawName){
+  const name = normalizeName(rawName) || 'טיימר';
+  const now = Date.now();
+  const total = minutes*60*1000;
+  timers.set(name, { name, start: now, end: now+total, totalMs: total, paused:false, remainingAtPause:0 });
+  say('הפעלתי טיימר ל־' + minutes + ' דקות - ' + name);
+  persist();
+}
+
+function cancelTimer(rawName){
+  const name = normalizeName(rawName);
+  if(!name){
+    if(timers.size===0){ say('אין טיימרים פעילים'); return; }
+    timers.clear();
+    say('כל הטיימרים בוטלו');
+    persist();
+    return;
+  }
+  if(timers.has(name)){
+    timers.delete(name);
+    say('הטיימר בוטל - ' + name);
+    persist();
+  } else {
+    say('לא נמצא טיימר בשם ' + name);
+  }
+}
+
+function pauseTimer(rawName){
+  const name = normalizeName(rawName);
+  if(!timers.has(name)){ say('לא נמצא טיימר בשם ' + name); return; }
+  const t = timers.get(name);
+  if(t.paused){ say('הטיימר כבר מושהה - ' + name); return; }
+  t.remainingAtPause = Math.max(0, t.end - Date.now());
+  t.paused = true;
+  say('הטיימר הושהה - ' + name);
+  persist();
+}
+
+function resumeTimer(rawName){
+  const name = normalizeName(rawName);
+  if(!timers.has(name)){ say('לא נמצא טיימר בשם ' + name); return; }
+  const t = timers.get(name);
+  if(!t.paused){ say('הטיימר כבר פועל - ' + name); return; }
+  t.end = Date.now() + (t.remainingAtPause || 0);
+  t.paused = false;
+  t.remainingAtPause = 0;
+  say('הטיימר הוחזר לפעולה - ' + name);
+  persist();
+}
+
+function extendTimer(minutes, rawName){
+  const name = normalizeName(rawName);
+  if(!timers.has(name)){ say('לא נמצא טיימר בשם ' + name); return; }
+  const t = timers.get(name);
+  const addMs = minutes*60*1000;
+  if(t.paused){ t.remainingAtPause += addMs; }
+  else { t.end += addMs; }
+  t.totalMs += addMs;
+  say('הוספתי ' + minutes + ' דקות - ' + name);
+  persist();
+}
+
+/* ===== כמה זמן נשאר ===== */
+function sayRemaining(rawName){
+  let name = normalizeName(rawName);
+  if(!name){
+    if(timers.size === 0){ say('אין טיימרים פעילים'); return; }
+    if(timers.size === 1){ name = [...timers.keys()][0]; }
+    else { say('יש כמה טיימרים פעילים: ' + [...timers.keys()].join(', ')); return; }
+  }
+  if(!timers.has(name)){ say('לא נמצא טיימר בשם ' + name); return; }
+  const t = timers.get(name);
+  const rem = t.paused ? t.remainingAtPause : (t.end - Date.now());
+  const s = Math.max(0, Math.floor(rem/1000));
+  const m = Math.floor(s/60);
+  const sec = s % 60;
+  say('נשארו ' + (m>0 ? (m+' דקות ו־'+sec+' שניות') : (sec+' שניות')) + ' - ' + name);
+}
+
+/* ===== פקודות קול ===== */
+function handleCommand(text){
+  const t = text.trim().toLowerCase();
+
+  if(/(^|\s)בטל(\s|$)/.test(t)){ cancelTimer(t.replace(/.*בטל\s*טיימר?/,'').trim()); return; }
+  if(/(^|\s)השהה(\s|$)/.test(t)){ pauseTimer(t.replace(/.*השהה\s*טיימר?/,'').trim()); return; }
+  if(/(^|\s)המשך(\s|$)/.test(t)){ resumeTimer(t.replace(/.*המשך\s*טיימר?/,'').trim()); return; }
+  if(/(^|\s)הוסף(\s|$)/.test(t)){
+    const m = t.match(/הוסף\s+(\d+)\s*דקות?/);
+    if(!m){ say('לא זיהיתי כמה דקות להוסיף'); return; }
+    extendTimer(parseInt(m[1],10), t.split(m[0])[1] || '');
+    return;
+  }
+  if(/כמה\s+זמן\s+נשאר/.test(t)){ sayRemaining(t.replace(/.*כמה\s+זמן\s+נשאר\s*/, '')); return; }
+  if(/(^|\s)(הפעל|התחל)(\s|$)/.test(t)){
+    const num = t.match(/(\d+)\s*דקות?/);
+    if(!num){ say('לא זיהיתי מספר דקות'); return; }
+    const minutes = parseInt(num[1],10);
+    if(!(minutes>=1)){ say('בחר מספר דקות שלמות, לפחות דקה אחת'); return; }
+    startTimer(minutes, t.split(num[0])[1] || '');
+    return;
+  }
+  say('לא זיהיתי את הפקודה');
+}
+
+/* ===== טבלה ===== */
+const tbody = document.getElementById('tbody');
+function render(){
+  const now = Date.now();
+  tbody.innerHTML = '';
+
+  for(const [name, t] of [...timers]){
+    let rem = t.paused ? t.remainingAtPause : (t.end - now);
+
+    if(rem <= 0 && !t.paused){
+      timers.delete(name);
+      say('הטיימר נגמר - ' + name);
+      playChime();
+      notifyDone(name);
+      persist();
+      continue;
+    }
+
+    const tr = document.createElement('tr');
+
+    const tdName  = document.createElement('td'); tdName.className='name'; tdName.textContent = name;
+    const tdLeft  = document.createElement('td'); tdLeft.textContent  = mmss(rem);
+    const tdTotal = document.createElement('td'); tdTotal.textContent = mmss(t.totalMs);
+    const tdState = document.createElement('td'); tdState.textContent = t.paused ? 'מושהה' : 'פעיל';
+
+    const tdProg = document.createElement('td');
+    const prog = document.createElement('div'); prog.className='progress';
+    const bar  = document.createElement('div'); bar.className='bar';
+    const pct = clamp(100 * (1 - (rem / t.totalMs)), 0, 100);
+    bar.style.width = pct + '%';
+    const hue = clamp(120 - pct*1.2, 0, 120);
+    bar.style.background = `hsl(${hue} 70% 45%)`;
+    prog.appendChild(bar);
+    tdProg.appendChild(prog);
+
+    const tdAct = document.createElement('td');
+    const bPause = document.createElement('button'); bPause.textContent = t.paused ? 'המשך' : 'השהה'; bPause.onclick = ()=> t.paused ? resumeTimer(name) : pauseTimer(name);
+    const bAdd1  = document.createElement('button'); bAdd1.textContent  = '+1 דק׳'; bAdd1.onclick  = ()=> extendTimer(1, name);
+    const bAdd5  = document.createElement('button'); bAdd5.textContent  = '+5 דק׳'; bAdd5.onclick  = ()=> extendTimer(5, name);
+    const bCancel= document.createElement('button'); bCancel.textContent = 'בטל'; bCancel.onclick = ()=> cancelTimer(name);
+    const bLeft  = document.createElement('button'); bLeft.textContent  = 'כמה נשאר?'; bLeft.onclick = ()=> sayRemaining(name);
+    tdAct.append(bPause, bAdd1, bAdd5, bCancel, bLeft);
+
+    tr.append(tdName, tdLeft, tdTotal, tdState, tdProg, tdAct);
+    tbody.appendChild(tr);
+  }
+}
+
+/* ===== רענון + התמדה ===== */
+let rafId = null, lastTick = 0;
+function loop(ts){
+  if(ts - lastTick >= 250){ render(); lastTick = ts; }
+  rafId = requestAnimationFrame(loop);
+}
+rafId = requestAnimationFrame(loop);
+
+// גיבוי שמירה כל 2 שניות
+setInterval(persist, 2000);
+
+// חזרה מהמסך: נרנדר, ואם עבר זמן — נכריז/נצלצל מייד
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState === 'hidden'){ persist(); }
+  else { render(); }
+});
+window.addEventListener('beforeunload', persist);
+
+/* ===== כפתורים ===== */
+document.getElementById('btnCancelAll').onclick = ()=> cancelTimer('');
+document.getElementById('btnListen').onclick = ()=>{
+  if(!SR){ alert('הדפדפן לא תומך בזיהוי דיבור'); return; }
+  if(listening) return;
+  rec = new SR();
+  rec.lang = 'he-IL';
+  rec.continuous = true;
+  rec.onstart = ()=>{ listening = true; setStatus('מאזין...'); };
+  rec.onend   = ()=>{ listening = false; setStatus('האזנה הופסקה'); };
+  rec.onerror = ()=>{ setStatus('שגיאת מיקרופון'); };
+  rec.onresult = (ev)=>{
+    for(let i=ev.resultIndex; i<ev.results.length; i++){
+      const txt = ev.results[i][0].transcript.trim();
+      handleCommand(txt);
+    }
+  };
+  try{ rec.start(); }catch{}
+};
+document.getElementById('btnStop').onclick = ()=>{ if(rec && listening){ rec.stop(); } };
+
+/* ===== עזרה ===== */
+const dlg = document.getElementById('helpDialog');
+document.getElementById('btnHelp').onclick = ()=> dlg.showModal();
+document.getElementById('btnCloseHelp').onclick = ()=> dlg.close();
+
+/* ===== אתחול ===== */
+restore();
+render();
+
+/* ===== רישום Service Worker (דורש HTTPS או localhost) ===== */
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
+  });
+}
+</script>
+</body>
+</html>
